@@ -13,7 +13,3 @@ services:
         sync: false
     # Disco persistente (US$ 1/mês). Comente as linhas abaixo se quiser
     # rodar 100% grátis (mas pedidos/chaves serão apagados a cada redeploy).
-    disk:
-      name: invise-data
-      mountPath: /opt/render/project/src/backend/data
-      sizeGB: 1
