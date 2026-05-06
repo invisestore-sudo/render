@@ -18,39 +18,6 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id BIGINT PRIMARY KEY,
-      received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      date TIMESTAMPTZ NOT NULL DEFAULT now(),
-      name TEXT NOT NULL,
-      email TEXT NOT NULL,
-      phone TEXT,
-      products JSONB NOT NULL DEFAULT '[]',
-      total NUMERIC(10, 2) NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'Pendente',
-      payment_method TEXT NOT NULL DEFAULT 'PIX',
-      ip TEXT
-    );
-    CREATE TABLE IF NOT EXISTS license_keys (
-      key TEXT PRIMARY KEY,
-      app TEXT NOT NULL,
-      email TEXT NOT NULL DEFAULT '',
-      order_id BIGINT,
-      plan TEXT NOT NULL DEFAULT 'lifetime',
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      expires_at TIMESTAMPTZ,
-      last_seen_at TIMESTAMPTZ,
-      device_count INT NOT NULL DEFAULT 0,
-      devices JSONB NOT NULL DEFAULT '[]',
-      notes TEXT NOT NULL DEFAULT ''
-    );
-  `);
-  console.log('✅ Tabelas verificadas/criadas.');
-}
-
 const VALID_APPS = ['habitos', 'finapp', 'all'];
 
 function generateKey() {
@@ -393,15 +360,8 @@ app.get('/', (req, res) => {
   res.send('InviseStore backend ativo. Painel: <a href="/admin">/admin</a>');
 });
 
-initDb()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`\n✅ InviseStore backend rodando em http://localhost:${PORT}`);
-      console.log(`   Painel:  http://localhost:${PORT}/admin`);
-      console.log(`   Login:   ${ADMIN_USER} / ${ADMIN_PASS}\n`);
-    });
-  })
-  .catch(err => {
-    console.error('ERRO ao inicializar banco:', err);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`\n✅ InviseStore backend rodando em http://localhost:${PORT}`);
+  console.log(`   Painel:  http://localhost:${PORT}/admin`);
+  console.log(`   Login:   ${ADMIN_USER} / ${ADMIN_PASS}\n`);
+});

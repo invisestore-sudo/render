@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>InviseStore — Painel</title>
+<style>
+  :root { --bg:#0a0a0f; --surface:#13131e; --surface2:#1a1a25; --border:rgba(255,255,255,0.08); --text:#f0f0f5; --muted:#9090a0; --accent:#6c63ff; --ok:#43e97b; --warn:#f59e0b; --danger:#ef4444; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--border); display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; background:rgba(10,10,15,.9); backdrop-filter:blur(10px); z-index:5;}
+  h1 { font-size: 18px; margin: 0; }
+  h1 span { color: var(--accent); }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+  .tab { padding: 10px 16px; background: transparent; color: var(--muted); border: 0; cursor: pointer; font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .grid { display: grid; gap: 12px; }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  input, select, textarea { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: inherit; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font-size: 14px; font-weight: 500; cursor: pointer; }
+  button:hover { opacity: 0.9; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.danger { background: var(--danger); }
+  button.warn { background: var(--warn); color: #000; }
+  button.small { padding: 6px 10px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  tr:hover td { background: var(--surface2); }
+  .key-cell { font-family: ui-monospace, Consolas, Menlo, monospace; font-size: 13px; color: var(--accent); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+  .badge.active { background: rgba(67,233,123,.15); color: var(--ok); }
+  .badge.revoked { background: rgba(239,68,68,.15); color: var(--danger); }
+  .badge.expired { background: rgba(245,158,11,.15); color: var(--warn); }
+  .badge.app { background: rgba(108,99,255,.15); color: var(--accent); }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); padding: 12px 18px; border-radius: 10px; color: var(--text); z-index: 100; }
+  .hidden { display: none !important; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Invise<span>Store</span> — Painel</h1>
+  <button class="ghost small" onclick="location.reload()">Atualizar</button>
+</header>
+
+<main>
+  <div class="tabs">
+    <button class="tab active" data-tab="orders">Pedidos</button>
+    <button class="tab" data-tab="keys">Chaves</button>
+    <button class="tab" data-tab="newkey">Gerar chave avulsa</button>
+  </div>
+
+  <section id="tab-orders">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div><strong id="orders-count">0</strong> pedidos</div>
+        <a href="/admin/api/export.csv"><button class="ghost small">Exportar CSV</button></a>
+      </div>
+    </div>
+    <div class="card" style="padding:0; overflow:auto;">
+      <table id="orders-table">
+        <thead><tr><th>ID</th><th>Data</th><th>Cliente</th><th>Email</th><th>Produtos</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="orders-empty">Carregando pedidos…</div>
+    </div>
+  </section>
+
+  <section id="tab-keys" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div><strong id="keys-count">0</strong> chaves</div>
+        <a href="/admin/api/keys/export.csv"><button class="ghost small">Exportar CSV</button></a>
+      </div>
+    </div>
+    <div class="card" style="padding:0; overflow:auto;">
+      <table id="keys-table">
+        <thead><tr><th>Chave</th><th>App</th><th>Email</th><th>Plano</th><th>Status</th><th>Criada</th><th>Último uso</th><th>Devices</th><th>Ações</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="keys-empty">Carregando chaves…</div>
+    </div>
+  </section>
+
+  <section id="tab-newkey" class="hidden">
+    <div class="card">
+      <h3 style="margin-top:0;">Gerar nova chave (sem pedido)</h3>
+      <p style="color:var(--muted); font-size:13px; margin-top:0;">Use para clientes que pagaram fora do site, testes ou cortesia.</p>
+      <div class="grid grid-2">
+        <div>
+          <label>App liberado</label>
+          <select id="nk-app">
+            <option value="all">all (libera os 2 apps)</option>
+            <option value="habitos">habitos</option>
+            <option value="finapp">finapp</option>
+          </select>
+        </div>
+        <div>
+          <label>Email do cliente (opcional)</label>
+          <input id="nk-email" type="email" placeholder="cliente@exemplo.com" />
+        </div>
+        <div>
+          <label>Plano</label>
+          <select id="nk-plan">
+            <option value="lifetime">lifetime</option>
+            <option value="annual">annual</option>
+            <option value="monthly">monthly</option>
+            <option value="trial">trial</option>
+          </select>
+        </div>
+        <div>
+          <label>Expira em (opcional)</label>
+          <input id="nk-expires" type="date" />
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label>Notas (opcional)</label>
+        <input id="nk-notes" placeholder="ex: cortesia, beta tester..." />
+      </div>
+      <div style="margin-top:16px;"><button onclick="generateKey()">Gerar chave</button></div>
+      <div id="nk-result" class="hidden" style="margin-top:16px; padding:14px; background:var(--surface2); border-radius:8px;">
+        <div style="font-size:12px; color:var(--muted);">Chave gerada — copie e envie ao cliente:</div>
+        <div class="key-cell" id="nk-result-key" style="font-size:18px; margin-top:6px;"></div>
+        <button class="ghost small" style="margin-top:8px;" onclick="copyText(document.getElementById('nk-result-key').textContent)">Copiar</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const toast = (msg) => {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 2200);
+};
+const fmtDate = (iso) => iso ? new Date(iso).toLocaleString('pt-BR') : '—';
+const copyText = async (txt) => {
+  try { await navigator.clipboard.writeText(txt); toast('Copiado!'); }
+  catch { toast('Falha ao copiar'); }
+};
+
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    ['orders','keys','newkey'].forEach(t =>
+      document.getElementById('tab-'+t).classList.toggle('hidden', t !== btn.dataset.tab));
+    if (btn.dataset.tab === 'keys') loadKeys();
+    if (btn.dataset.tab === 'orders') loadOrders();
+  };
+});
+
+async function api(method, path, body, opts2) {
+  const { retries = 0, onRetry = null } = opts2 || {};
+  const opts = { method, headers: {} };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const r = await fetch(path, opts);
+      // Retry em 5xx / 502/503/504 (cold start do Render)
+      if (r.status >= 500 && attempt < retries) {
+        lastErr = new Error(r.status + ' server');
+      } else if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new Error(r.status + ' ' + text);
+      } else {
+        return r.json();
+      }
+    } catch (e) {
+      lastErr = e;
+      if (attempt >= retries) throw e;
+    }
+    // Cold start do Render free pode levar 60s+. Backoff: 2s, 3s, 5s, depois 5s fixo.
+    const delay = Math.min(2000 + attempt * 1000, 5000);
+    if (onRetry) onRetry(attempt + 1, retries);
+    await new Promise(res => setTimeout(res, delay));
+  }
+  throw lastErr;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+async function loadOrders() {
+  const emptyEl = $('#orders-empty');
+  emptyEl.textContent = 'Carregando pedidos…';
+  emptyEl.classList.remove('hidden');
+  try {
+    const orders = await api('GET', '/admin/api/orders', null, {
+      retries: 15,
+      onRetry: (n) => { emptyEl.textContent = `Servidor acordando, aguarde… (${n * 4}s)`; }
+    });
+    $('#orders-count').textContent = orders.length;
+    const tbody = $('#orders-table tbody');
+    tbody.innerHTML = '';
+    emptyEl.textContent = 'Nenhum pedido ainda.';
+    emptyEl.classList.toggle('hidden', orders.length > 0);
+    orders.forEach(o => {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>#' + o.id + '</td>' +
+        '<td>' + fmtDate(o.date) + '</td>' +
+        '<td>' + escapeHtml(o.name) + '</td>' +
+        '<td>' + escapeHtml(o.email) + '</td>' +
+        '<td>' + escapeHtml((o.products||[]).join(', ')) + '</td>' +
+        '<td>R$ ' + Number(o.total).toFixed(2) + '</td>' +
+        '<td><span class="badge ' + (o.status === 'Pago' ? 'active' : '') + '">' + escapeHtml(o.status) + '</span></td>' +
+        '<td class="actions">' +
+          '<button class="small" onclick="genKeyFor(' + o.id + ')">+ Chave</button>' +
+          (o.status !== 'Pago' ? '<button class="small ghost" onclick="markPaid(' + o.id + ')">Marcar pago</button>' : '') +
+          '<button class="small danger" onclick="delOrder(' + o.id + ')">×</button>' +
+        '</td>';
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    emptyEl.textContent = 'Falha ao carregar pedidos. Tente recarregar a página.';
+    emptyEl.classList.remove('hidden');
+    toast('Erro: ' + e.message);
+  }
+}
+
+async function markPaid(id) {
+  try { await api('PATCH', '/admin/api/orders/'+id, { status: 'Pago' }); loadOrders(); }
+  catch (e) { toast('Erro: ' + e.message); }
+}
+async function delOrder(id) {
+  if (!confirm('Excluir pedido #'+id+'?')) return;
+  try { await api('DELETE', '/admin/api/orders/'+id); loadOrders(); }
+  catch (e) { toast('Erro: ' + e.message); }
+}
+async function genKeyFor(orderId) {
+  const appName = prompt('App liberado por essa chave? (all / habitos / finapp)', 'all');
+  if (!appName) return;
+  try {
+    const k = await api('POST', '/admin/api/orders/'+orderId+'/key', { app: appName });
+    copyText(k.key);
+    toast('Chave gerada e copiada: ' + k.key);
+  } catch (e) { toast('Erro: ' + e.message); }
+}
+
+async function loadKeys() {
+  const emptyEl = $('#keys-empty');
+  emptyEl.textContent = 'Carregando chaves…';
+  emptyEl.classList.remove('hidden');
+  try {
+    const keys = await api('GET', '/admin/api/keys', null, {
+      retries: 15,
+      onRetry: (n) => { emptyEl.textContent = `Servidor acordando, aguarde… (${n * 4}s)`; }
+    });
+    $('#keys-count').textContent = keys.length;
+    const tbody = $('#keys-table tbody');
+    tbody.innerHTML = '';
+    emptyEl.textContent = 'Nenhuma chave gerada.';
+    emptyEl.classList.toggle('hidden', keys.length > 0);
+    keys.forEach(k => {
+      const isExpired = k.expiresAt && new Date(k.expiresAt) < new Date();
+      const statusClass = k.status === 'revoked' ? 'revoked' : (isExpired ? 'expired' : 'active');
+      const statusTxt = k.status === 'revoked' ? 'revogada' : (isExpired ? 'expirada' : 'ativa');
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><span class="key-cell">' + k.key + '</span> <button class="small ghost" onclick="copyText(\'' + k.key + '\')">copiar</button></td>' +
+        '<td><span class="badge app">' + k.app + '</span></td>' +
+        '<td>' + escapeHtml(k.email || '—') + '</td>' +
+        '<td>' + escapeHtml(k.plan) + '</td>' +
+        '<td><span class="badge ' + statusClass + '">' + statusTxt + '</span></td>' +
+        '<td>' + fmtDate(k.createdAt) + '</td>' +
+        '<td>' + fmtDate(k.lastSeenAt) + '</td>' +
+        '<td>' + (k.deviceCount || 0) + '</td>' +
+        '<td class="actions">' +
+          (k.status === 'active'
+            ? '<button class="small warn" onclick="setKeyStatus(\'' + k.key + '\',\'revoked\')">Revogar</button>'
+            : '<button class="small" onclick="setKeyStatus(\'' + k.key + '\',\'active\')">Reativar</button>') +
+          '<button class="small danger" onclick="delKey(\'' + k.key + '\')">×</button>' +
+        '</td>';
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    emptyEl.textContent = 'Falha ao carregar chaves. Tente recarregar a página.';
+    emptyEl.classList.remove('hidden');
+    toast('Erro: ' + e.message);
+  }
+}
+
+async function setKeyStatus(key, status) {
+  try { await api('PATCH', '/admin/api/keys/'+encodeURIComponent(key), { status }); loadKeys(); }
+  catch (e) { toast('Erro: ' + e.message); }
+}
+async function delKey(key) {
+  if (!confirm('Excluir chave '+key+'? (Definitivo)')) return;
+  try { await api('DELETE', '/admin/api/keys/'+encodeURIComponent(key)); loadKeys(); }
+  catch (e) { toast('Erro: ' + e.message); }
+}
+
+async function generateKey() {
+  const body = {
+    app: $('#nk-app').value,
+    email: $('#nk-email').value.trim(),
+    plan: $('#nk-plan').value,
+    expiresAt: $('#nk-expires').value || null,
+    notes: $('#nk-notes').value.trim()
+  };
+  try {
+    const k = await api('POST', '/admin/api/keys', body);
+    $('#nk-result').classList.remove('hidden');
+    $('#nk-result-key').textContent = k.key;
+    copyText(k.key);
+  } catch (e) { toast('Erro: ' + e.message); }
+}
+
+loadOrders();
+loadKeys();
+</script>
+</body>
+</html>
