@@ -5,7 +5,7 @@ services:
     plan: free
     rootDir: backend
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: node --dns-result-order=ipv4first server.js
     envVars:
       - key: ADMIN_USER
         sync: false

@@ -1,6 +1,3 @@
-const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first');
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -16,10 +13,23 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+// Resolve hostname para IPv4 antes de criar o pool (corrige ENETUNREACH no Render free tier)
+async function buildPool() {
+  let connStr = process.env.DATABASE_URL;
+  try {
+    const url = new URL(connStr);
+    const { resolve4 } = require('dns').promises;
+    const [ipv4] = await resolve4(url.hostname);
+    url.hostname = ipv4;
+    connStr = url.toString();
+    console.log(`DB: conectando via IPv4 (${ipv4})`);
+  } catch (e) {
+    console.warn('DB: resolve4 falhou, usando URL original:', e.message);
+  }
+  return new Pool({ connectionString: connStr, ssl: { rejectUnauthorized: false } });
+}
+
+let pool;
 
 async function initDb() {
   await pool.query(`
@@ -396,7 +406,8 @@ app.get('/', (req, res) => {
   res.send('InviseStore backend ativo. Painel: <a href="/admin">/admin</a>');
 });
 
-initDb()
+buildPool()
+  .then(p => { pool = p; return initDb(); })
   .then(() => {
     app.listen(PORT, () => {
       console.log(`\n✅ InviseStore backend rodando em http://localhost:${PORT}`);
