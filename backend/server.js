@@ -404,10 +404,6 @@ app.get('/admin', adminAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
 
-app.get('/treino', (req, res) => {
-  res.sendFile(path.join(__dirname, 'treino.html'));
-});
-
 app.get('/', (req, res) => {
   res.send('InviseStore backend ativo. Painel: <a href="/admin">/admin</a>');
 });
