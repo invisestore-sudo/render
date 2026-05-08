@@ -66,7 +66,7 @@ async function initDb() {
   console.log('✅ Tabelas verificadas/criadas.');
 }
 
-const VALID_APPS = ['habitos', 'finapp', 'all'];
+const VALID_APPS = ['habitos', 'finapp', 'treino', 'all'];
 
 function generateKey() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -402,6 +402,10 @@ app.get('/admin/api/keys/export.csv', adminAuth, async (req, res) => {
 // =====================================================
 app.get('/admin', adminAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
+});
+
+app.get('/treino', (req, res) => {
+  res.sendFile(path.join(__dirname, 'treino.html'));
 });
 
 app.get('/', (req, res) => {

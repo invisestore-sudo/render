@@ -97,9 +97,10 @@
         <div>
           <label>App liberado</label>
           <select id="nk-app">
-            <option value="all">all (libera os 2 apps)</option>
+            <option value="all">all (libera todos os apps)</option>
             <option value="habitos">habitos</option>
             <option value="finapp">finapp</option>
+            <option value="treino">treino</option>
           </select>
         </div>
         <div>
@@ -242,7 +243,7 @@ async function delOrder(id) {
   catch (e) { toast('Erro: ' + e.message); }
 }
 async function genKeyFor(orderId) {
-  const appName = prompt('App liberado por essa chave? (all / habitos / finapp)', 'all');
+  const appName = prompt('App liberado por essa chave? (all / habitos / finapp / treino)', 'all');
   if (!appName) return;
   try {
     const k = await api('POST', '/admin/api/orders/'+orderId+'/key', { app: appName });
