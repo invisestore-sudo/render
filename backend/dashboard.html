@@ -83,7 +83,7 @@
     </div>
     <div class="card" style="padding:0; overflow:auto;">
       <table id="meetings-table">
-        <thead><tr><th>ID</th><th>Data</th><th>Produto</th><th>Cliente</th><th>WhatsApp</th><th>Email</th><th>Orçamento</th><th>Quando começar</th><th>Status</th><th>Ações</th></tr></thead>
+        <thead><tr><th>ID</th><th>Data</th><th>Produto</th><th>Cliente</th><th>WhatsApp</th><th>Email</th><th>Nível</th><th>Quando começar</th><th>Status</th><th>Ações</th></tr></thead>
         <tbody></tbody>
       </table>
       <div class="empty" id="meetings-empty">Carregando reuniões…</div>
@@ -363,7 +363,7 @@ async function loadMeetings() {
         '<td>' + escapeHtml(m.name) + '</td>' +
         '<td>' + escapeHtml(m.phone) + '</td>' +
         '<td>' + escapeHtml(m.email) + '</td>' +
-        '<td>' + escapeHtml(m.budget) + '</td>' +
+        '<td>' + escapeHtml(m.tier) + '</td>' +
         '<td>' + escapeHtml(m.startWhen) + '</td>' +
         '<td><span class="badge ' + (isContacted ? 'active' : '') + '">' + escapeHtml(m.status) + '</span></td>' +
         '<td class="actions">' +

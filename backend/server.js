@@ -128,7 +128,7 @@ function rowToMeeting(r) {
     name: r.name,
     email: r.email,
     phone: r.phone,
-    budget: r.budget,
+    tier: r.budget,
     startWhen: r.start_when,
     status: r.status,
     ip: r.ip
@@ -213,7 +213,7 @@ app.post('/api/meetings', async (req, res) => {
         id, now, b.date || now,
         String(b.product).trim(),
         String(b.name).trim(), String(b.email).trim(), String(b.phone).trim(),
-        String(b.budget || '').trim(),
+        String(b.tier || b.budget || '').trim(),
         String(b.startWhen || '').trim(),
         b.status || 'Aguardando contato',
         req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''
@@ -411,9 +411,9 @@ app.get('/admin/api/meetings/export.csv', adminAuth, async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM meetings ORDER BY received_at DESC');
     const meetings = rows.map(rowToMeeting);
     const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const head = 'id,date,product,name,email,phone,budget,startWhen,status\n';
+    const head = 'id,date,product,name,email,phone,tier,startWhen,status\n';
     const body = meetings.map(m => [
-      m.id, m.date, m.product, m.name, m.email, m.phone, m.budget, m.startWhen, m.status
+      m.id, m.date, m.product, m.name, m.email, m.phone, m.tier, m.startWhen, m.status
     ].map(esc).join(',')).join('\n');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="reunioes.csv"');
