@@ -53,6 +53,7 @@
 <main>
   <div class="tabs">
     <button class="tab active" data-tab="orders">Pedidos</button>
+    <button class="tab" data-tab="meetings">Reuniões</button>
     <button class="tab" data-tab="keys">Chaves</button>
     <button class="tab" data-tab="newkey">Gerar chave avulsa</button>
   </div>
@@ -70,6 +71,22 @@
         <tbody></tbody>
       </table>
       <div class="empty" id="orders-empty">Carregando pedidos…</div>
+    </div>
+  </section>
+
+  <section id="tab-meetings" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div><strong id="meetings-count">0</strong> reuniões solicitadas</div>
+        <a href="/admin/api/meetings/export.csv"><button class="ghost small">Exportar CSV</button></a>
+      </div>
+    </div>
+    <div class="card" style="padding:0; overflow:auto;">
+      <table id="meetings-table">
+        <thead><tr><th>ID</th><th>Data</th><th>Produto</th><th>Cliente</th><th>WhatsApp</th><th>Email</th><th>Orçamento</th><th>Quando começar</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="meetings-empty">Carregando reuniões…</div>
     </div>
   </section>
 
@@ -155,10 +172,11 @@ document.querySelectorAll('.tab').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    ['orders','keys','newkey'].forEach(t =>
+    ['orders','meetings','keys','newkey'].forEach(t =>
       document.getElementById('tab-'+t).classList.toggle('hidden', t !== btn.dataset.tab));
     if (btn.dataset.tab === 'keys') loadKeys();
     if (btn.dataset.tab === 'orders') loadOrders();
+    if (btn.dataset.tab === 'meetings') loadMeetings();
   };
 });
 
@@ -321,8 +339,60 @@ async function generateKey() {
   } catch (e) { toast('Erro: ' + e.message); }
 }
 
+async function loadMeetings() {
+  const emptyEl = $('#meetings-empty');
+  emptyEl.textContent = 'Carregando reuniões…';
+  emptyEl.classList.remove('hidden');
+  try {
+    const meetings = await api('GET', '/admin/api/meetings', null, {
+      retries: 15,
+      onRetry: (n) => { emptyEl.textContent = `Servidor acordando, aguarde… (${n * 4}s)`; }
+    });
+    $('#meetings-count').textContent = meetings.length;
+    const tbody = $('#meetings-table tbody');
+    tbody.innerHTML = '';
+    emptyEl.textContent = 'Nenhuma reunião solicitada ainda.';
+    emptyEl.classList.toggle('hidden', meetings.length > 0);
+    meetings.forEach(m => {
+      const isContacted = m.status === 'Contatado' || m.status === 'Concluído';
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>#' + m.id + '</td>' +
+        '<td>' + fmtDate(m.date) + '</td>' +
+        '<td><span class="badge app">' + escapeHtml(m.product) + '</span></td>' +
+        '<td>' + escapeHtml(m.name) + '</td>' +
+        '<td>' + escapeHtml(m.phone) + '</td>' +
+        '<td>' + escapeHtml(m.email) + '</td>' +
+        '<td>' + escapeHtml(m.budget) + '</td>' +
+        '<td>' + escapeHtml(m.startWhen) + '</td>' +
+        '<td><span class="badge ' + (isContacted ? 'active' : '') + '">' + escapeHtml(m.status) + '</span></td>' +
+        '<td class="actions">' +
+          (m.status !== 'Contatado' ? '<button class="small" onclick="markMeetingContacted(' + m.id + ')">Marcar contatado</button>' : '') +
+          '<button class="small danger" onclick="delMeeting(' + m.id + ')">×</button>' +
+        '</td>';
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    emptyEl.textContent = 'Falha ao carregar reuniões. Tente recarregar a página.';
+    emptyEl.classList.remove('hidden');
+    toast('Erro: ' + e.message);
+  }
+}
+
+async function markMeetingContacted(id) {
+  try { await api('PATCH', '/admin/api/meetings/'+id, { status: 'Contatado' }); loadMeetings(); }
+  catch (e) { toast('Erro: ' + e.message); }
+}
+
+async function delMeeting(id) {
+  if (!confirm('Excluir reunião #'+id+'?')) return;
+  try { await api('DELETE', '/admin/api/meetings/'+id); loadMeetings(); }
+  catch (e) { toast('Erro: ' + e.message); }
+}
+
 loadOrders();
 loadKeys();
+loadMeetings();
 </script>
 </body>
 </html>

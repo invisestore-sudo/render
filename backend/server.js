@@ -48,6 +48,19 @@ async function initDb() {
       payment_method TEXT NOT NULL DEFAULT 'PIX',
       ip TEXT
     );
+    CREATE TABLE IF NOT EXISTS meetings (
+      id BIGINT PRIMARY KEY,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      date TIMESTAMPTZ NOT NULL DEFAULT now(),
+      product TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      budget TEXT NOT NULL DEFAULT '',
+      start_when TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'Aguardando contato',
+      ip TEXT
+    );
     CREATE TABLE IF NOT EXISTS license_keys (
       key TEXT PRIMARY KEY,
       app TEXT NOT NULL,
@@ -102,6 +115,22 @@ function rowToOrder(r) {
     total: Number(r.total),
     status: r.status,
     paymentMethod: r.payment_method,
+    ip: r.ip
+  };
+}
+
+function rowToMeeting(r) {
+  return {
+    id: Number(r.id),
+    receivedAt: r.received_at,
+    date: r.date,
+    product: r.product,
+    name: r.name,
+    email: r.email,
+    phone: r.phone,
+    budget: r.budget,
+    startWhen: r.start_when,
+    status: r.status,
     ip: r.ip
   };
 }
@@ -165,6 +194,36 @@ app.post('/api/orders', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao salvar pedido' });
+  }
+});
+
+app.post('/api/meetings', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.name || !b.email || !b.phone || !b.product) {
+      return res.status(400).json({ error: 'name, email, phone e product são obrigatórios' });
+    }
+    const id = b.id || Date.now();
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO meetings (id, received_at, date, product, name, email, phone, budget, start_when, status, ip)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        id, now, b.date || now,
+        String(b.product).trim(),
+        String(b.name).trim(), String(b.email).trim(), String(b.phone).trim(),
+        String(b.budget || '').trim(),
+        String(b.startWhen || '').trim(),
+        b.status || 'Aguardando contato',
+        req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''
+      ]
+    );
+    console.log(`[NOVA REUNIÃO] #${id} - ${b.name} (${b.email}) - ${b.product}`);
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao salvar reunião' });
   }
 });
 
@@ -306,6 +365,62 @@ app.post('/admin/api/orders/:id/key', adminAuth, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao gerar chave' });
+  }
+});
+
+// =====================================================
+// Admin: reuniões (serviços)
+// =====================================================
+app.get('/admin/api/meetings', adminAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM meetings ORDER BY received_at DESC');
+    res.json(rows.map(rowToMeeting));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao buscar reuniões' });
+  }
+});
+
+app.patch('/admin/api/meetings/:id', adminAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      'UPDATE meetings SET status = $1 WHERE id = $2 RETURNING *',
+      [String(req.body.status || 'Aguardando contato'), id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'não encontrado' });
+    res.json(rowToMeeting(rows[0]));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao atualizar reunião' });
+  }
+});
+
+app.delete('/admin/api/meetings/:id', adminAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM meetings WHERE id = $1', [Number(req.params.id)]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao deletar reunião' });
+  }
+});
+
+app.get('/admin/api/meetings/export.csv', adminAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM meetings ORDER BY received_at DESC');
+    const meetings = rows.map(rowToMeeting);
+    const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const head = 'id,date,product,name,email,phone,budget,startWhen,status\n';
+    const body = meetings.map(m => [
+      m.id, m.date, m.product, m.name, m.email, m.phone, m.budget, m.startWhen, m.status
+    ].map(esc).join(',')).join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="reunioes.csv"');
+    res.send(head + body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao exportar' });
   }
 });
 
