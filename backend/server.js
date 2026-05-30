@@ -291,7 +291,9 @@ async function markOrderPaidFromMp(payment) {
   const dup = await pool.query('SELECT id FROM orders WHERE mp_payment_id = $1 LIMIT 1', [paymentId]);
   if (dup.rows[0]) return { matched: dup.rows[0].id, already: true };
 
-  const email = String((payment.payer && payment.payer.email) || '').trim().toLowerCase();
+  let email = String((payment.payer && payment.payer.email) || '').trim().toLowerCase();
+  // O MP as vezes mascara o e-mail (ex: "XXXXXXXX"). Nesse caso, ignora.
+  if (!email.includes('@') || /x{4,}/i.test(email)) email = '';
   const amount = Number(payment.transaction_amount) || 0;
   const extRef = payment.external_reference;
   const now = new Date().toISOString();
@@ -328,10 +330,14 @@ async function markOrderPaidFromMp(payment) {
   }
 
   if (order) {
+    // Preserva o e-mail que o cliente digitou no site; so preenche pelo
+    // pagamento se o pedido estiver sem e-mail valido.
+    const orderEmail = String(order.email || '').trim();
+    const finalEmail = (!orderEmail || !orderEmail.includes('@')) && email ? email : orderEmail;
     await pool.query(
-      `UPDATE orders SET status = 'Pago', paid_at = $1, mp_payment_id = $2, acknowledged = FALSE
-       WHERE id = $3`,
-      [now, paymentId, order.id]
+      `UPDATE orders SET status = 'Pago', paid_at = $1, mp_payment_id = $2, email = $3, acknowledged = FALSE
+       WHERE id = $4`,
+      [now, paymentId, finalEmail, order.id]
     );
     return { matched: order.id, created: false };
   }
@@ -380,10 +386,23 @@ async function reconcilePayments() {
     }
     const data = await r.json();
     const results = Array.isArray(data.results) ? data.results : [];
+    const approved = results.filter(p => p.status === 'approved');
+    if (approved.length === 0) return;
+
+    // Pula pagamentos ja processados (idempotencia em lote).
+    const ids = approved.map(p => String(p.id));
+    const done = await pool.query(
+      'SELECT mp_payment_id FROM orders WHERE mp_payment_id = ANY($1)', [ids]
+    );
+    const doneSet = new Set(done.rows.map(x => String(x.mp_payment_id)));
+
     let novos = 0;
-    for (const p of results) {
-      if (p.status !== 'approved') continue;
-      const res = await markOrderPaidFromMp(p);
+    for (const p of approved) {
+      if (doneSet.has(String(p.id))) continue;
+      // Busca o detalhe completo para obter o e-mail real do comprador
+      // (a busca em lote do MP costuma mascarar o e-mail).
+      const full = await fetchMpPayment(p.id) || p;
+      const res = await markOrderPaidFromMp(full);
       if (res && !res.already) novos++;
     }
     if (novos > 0) console.log(`💰 [RECONCILE] ${novos} pagamento(s) aprovado(s) vinculado(s) a pedidos.`);

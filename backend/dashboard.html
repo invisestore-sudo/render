@@ -53,7 +53,6 @@
 <main>
   <div class="tabs">
     <button class="tab active" data-tab="orders">Pedidos</button>
-    <button class="tab" data-tab="meetings">Reuniões</button>
     <button class="tab" data-tab="keys">Chaves</button>
     <button class="tab" data-tab="newkey">Gerar chave avulsa</button>
   </div>
@@ -71,22 +70,6 @@
         <tbody></tbody>
       </table>
       <div class="empty" id="orders-empty">Carregando pedidos…</div>
-    </div>
-  </section>
-
-  <section id="tab-meetings" class="hidden">
-    <div class="card">
-      <div class="row" style="justify-content:space-between;">
-        <div><strong id="meetings-count">0</strong> reuniões solicitadas</div>
-        <a href="/admin/api/meetings/export.csv"><button class="ghost small">Exportar CSV</button></a>
-      </div>
-    </div>
-    <div class="card" style="padding:0; overflow:auto;">
-      <table id="meetings-table">
-        <thead><tr><th>ID</th><th>Data</th><th>Produto</th><th>Cliente</th><th>WhatsApp</th><th>Email</th><th>Nível</th><th>Quando começar</th><th>Status</th><th>Ações</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="empty" id="meetings-empty">Carregando reuniões…</div>
     </div>
   </section>
 
@@ -172,11 +155,10 @@ document.querySelectorAll('.tab').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    ['orders','meetings','keys','newkey'].forEach(t =>
+    ['orders','keys','newkey'].forEach(t =>
       document.getElementById('tab-'+t).classList.toggle('hidden', t !== btn.dataset.tab));
     if (btn.dataset.tab === 'keys') loadKeys();
     if (btn.dataset.tab === 'orders') loadOrders();
-    if (btn.dataset.tab === 'meetings') loadMeetings();
   };
 });
 
@@ -392,7 +374,6 @@ async function delMeeting(id) {
 
 loadOrders();
 loadKeys();
-loadMeetings();
 
 // Atualiza a lista de pedidos automaticamente (sem recarregar a página),
 // para que o status mude de "Pendente" para "Pago" sozinho quando o
