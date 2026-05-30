@@ -892,37 +892,68 @@ app.get('/admin', adminAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
 
+// Consulta publica do status de um pedido (usada pela tela de retorno
+// para atualizar sozinha quando o pagamento for confirmado).
+app.get('/api/order-status/:id', async (req, res) => {
+  try {
+    if (Date.now() - _lastReconcile > 15000) reconcilePayments(); // nudge (sem await)
+    const { rows } = await pool.query('SELECT status FROM orders WHERE id = $1', [Number(req.params.id)]);
+    res.json({ status: rows[0] ? rows[0].status : null });
+  } catch (err) {
+    res.status(500).json({ status: null });
+  }
+});
+
 // =====================================================
 // Telas de retorno do checkout (back_urls do Mercado Pago)
+// Atualizam sozinhas: se voltar como "pendente", consultam o pedido a cada
+// 3s e mudam para "aprovado" assim que o pagamento for confirmado.
 // =====================================================
-function compraPage({ titulo, emoji, cor, msg }) {
+const RETURN_CFG = {
+  approved: { titulo: 'Pagamento aprovado!', emoji: '✅', cor: '#43e97b', msg: 'Recebemos a confirmação do seu pagamento. Seu produto será enviado para o seu e-mail em instantes — confira também a caixa de spam. Obrigado pela compra! 🎉' },
+  pending:  { titulo: 'Pagamento em processamento', emoji: '⏳', cor: '#f59e0b', msg: 'Seu pagamento está sendo processado. Esta página atualiza sozinha assim que ele for confirmado.' },
+  failure:  { titulo: 'Compra não concluída', emoji: '❌', cor: '#ef4444', msg: 'O pagamento não foi concluído, então sua compra não foi realizada. Você pode tentar novamente quando quiser.' }
+};
+
+function compraPage(kind, orderId) {
+  const c = RETURN_CFG[kind] || RETURN_CFG.pending;
   const voltar = STORE_URL
     ? `<a href="${STORE_URL}" style="display:inline-block;margin-top:24px;background:#6c63ff;color:#fff;text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600;">Voltar à loja</a>`
     : '';
+  const aprovadoJson = JSON.stringify(RETURN_CFG.approved);
+  const poll = (kind === 'pending' && orderId)
+    ? `<script>(function(){var oid=${JSON.stringify(String(orderId))},ap=${aprovadoJson},n=0;`
+      + `var t=setInterval(function(){n++;fetch('/api/order-status/'+oid).then(function(r){return r.json();})`
+      + `.then(function(d){if(d&&d.status==='Pago'){clearInterval(t);`
+      + `document.getElementById('e').textContent=ap.emoji;`
+      + `var h=document.getElementById('t');h.textContent=ap.titulo;h.style.color=ap.cor;`
+      + `document.getElementById('m').textContent=ap.msg;}}).catch(function(){});`
+      + `if(n>40)clearInterval(t);},3000);})();</script>`
+    : '';
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">`
     + `<meta name="viewport" content="width=device-width,initial-scale=1">`
-    + `<title>${titulo} — InviseStore</title><style>`
+    + `<title>${c.titulo} — InviseStore</title><style>`
     + `body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;`
     + `background:#0a0a0f;color:#f0f0f5;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px;}`
     + `.box{max-width:440px;text-align:center;background:#13131e;border:1px solid rgba(255,255,255,.08);`
     + `border-radius:16px;padding:40px 28px;}.emoji{font-size:54px;line-height:1;}`
-    + `h1{font-size:22px;margin:18px 0 10px;color:${cor};}p{color:#b8b8c8;font-size:15px;line-height:1.6;margin:0;}`
-    + `</style></head><body><div class="box"><div class="emoji">${emoji}</div>`
-    + `<h1>${titulo}</h1><p>${msg}</p>${voltar}</div></body></html>`;
+    + `h1{font-size:22px;margin:18px 0 10px;}p{color:#b8b8c8;font-size:15px;line-height:1.6;margin:0;}`
+    + `</style></head><body><div class="box"><div class="emoji" id="e">${c.emoji}</div>`
+    + `<h1 id="t" style="color:${c.cor}">${c.titulo}</h1><p id="m">${c.msg}</p>${voltar}</div>${poll}</body></html>`;
 }
 
-app.get('/compra/sucesso', (req, res) => res.send(compraPage({
-  titulo: 'Pagamento aprovado!', emoji: '✅', cor: '#43e97b',
-  msg: 'Recebemos a confirmação do seu pagamento. O seu produto será enviado para o seu e-mail em instantes — verifique também a caixa de spam. Obrigado pela compra! 🎉'
-})));
-app.get('/compra/pendente', (req, res) => res.send(compraPage({
-  titulo: 'Pagamento em processamento', emoji: '⏳', cor: '#f59e0b',
-  msg: 'Seu pagamento está sendo processado. Assim que for confirmado, enviaremos o produto para o seu e-mail.'
-})));
-app.get('/compra/falha', (req, res) => res.send(compraPage({
-  titulo: 'Compra não concluída', emoji: '❌', cor: '#ef4444',
-  msg: 'O pagamento não foi concluído, então a sua compra não foi realizada. Você pode tentar novamente quando quiser.'
-})));
+// Decide o estado real pela query que o Mercado Pago anexa (status/collection_status).
+function returnKind(req, fallbackKind) {
+  const s = String(req.query.status || req.query.collection_status || '').toLowerCase();
+  if (s === 'approved') return 'approved';
+  if (s === 'rejected' || s === 'cancelled') return 'failure';
+  if (s === 'pending' || s === 'in_process') return 'pending';
+  return fallbackKind;
+}
+
+app.get('/compra/sucesso', (req, res) => res.send(compraPage(returnKind(req, 'approved'), req.query.external_reference || '')));
+app.get('/compra/pendente', (req, res) => res.send(compraPage(returnKind(req, 'pending'), req.query.external_reference || '')));
+app.get('/compra/falha', (req, res) => res.send(compraPage(returnKind(req, 'failure'), req.query.external_reference || '')));
 
 app.get('/', (req, res) => {
   res.send('InviseStore backend ativo. Painel: <a href="/admin">/admin</a>');
