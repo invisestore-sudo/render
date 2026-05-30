@@ -11,5 +11,12 @@ services:
         sync: false
       - key: ADMIN_PASS
         sync: false
+      # Access Token de produção do Mercado Pago (Suas integrações → Credenciais).
+      # Sem ele, os pagamentos não são confirmados automaticamente no painel.
+      - key: MP_ACCESS_TOKEN
+        sync: false
+      # Opcional: segredo da assinatura do webhook do Mercado Pago.
+      - key: MP_WEBHOOK_SECRET
+        sync: false
     # Disco persistente (US$ 1/mês). Comente as linhas abaixo se quiser
     # rodar 100% grátis (mas pedidos/chaves serão apagados a cada redeploy).

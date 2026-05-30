@@ -23,6 +23,14 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'invise123';
 
+// Token de acesso do Mercado Pago (Access Token de produção).
+// Necessário para consultar os pagamentos recebidos via webhook e confirmar
+// que foram aprovados. Configure em Render → Environment → MP_ACCESS_TOKEN.
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || '';
+// Segredo opcional para validar a assinatura dos webhooks do Mercado Pago.
+// Se não configurado, a validação de assinatura fica desativada.
+const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || '';
+
 if (!process.env.DATABASE_URL) {
   console.error('ERRO: variável DATABASE_URL não definida.');
   process.exit(1);
@@ -76,6 +84,14 @@ async function initDb() {
       notes TEXT NOT NULL DEFAULT ''
     );
   `);
+  // Colunas para o fluxo de confirmação de pagamento via webhook do Mercado Pago.
+  // paid_at: quando o pagamento foi aprovado | mp_payment_id: id do pagamento no MP
+  // acknowledged: se o admin já viu a notificação desse pagamento no painel.
+  await pool.query(`
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS mp_payment_id TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT TRUE;
+  `);
   console.log('✅ Tabelas verificadas/criadas.');
 }
 
@@ -115,6 +131,9 @@ function rowToOrder(r) {
     total: Number(r.total),
     status: r.status,
     paymentMethod: r.payment_method,
+    paidAt: r.paid_at,
+    mpPaymentId: r.mp_payment_id,
+    acknowledged: r.acknowledged,
     ip: r.ip
   };
 }
@@ -194,6 +213,170 @@ app.post('/api/orders', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao salvar pedido' });
+  }
+});
+
+// =====================================================
+// Mercado Pago — Webhook de confirmação de pagamento
+//
+// O Mercado Pago chama esta URL automaticamente sempre que um pagamento
+// muda de status. Quando o pagamento é aprovado, marcamos o pedido
+// correspondente como "Pago" e geramos uma notificação no painel.
+//
+// Configuração necessária (uma vez):
+//   1. Mercado Pago → Suas integrações → Webhooks/Notificações:
+//      URL: https://invisestore-backend.onrender.com/api/mp/webhook
+//      Evento: "Pagamentos" (payment)
+//   2. Render → Environment: defina MP_ACCESS_TOKEN (Access Token de produção).
+//      Opcional: MP_WEBHOOK_SECRET (assinatura secreta do webhook).
+// =====================================================
+
+// Valida a assinatura do webhook (x-signature) quando MP_WEBHOOK_SECRET existe.
+function verifyMpSignature(req) {
+  if (!MP_WEBHOOK_SECRET) return true; // validação desativada
+  const sig = req.headers['x-signature'] || '';
+  const reqId = req.headers['x-request-id'] || '';
+  const parts = {};
+  sig.split(',').forEach(p => {
+    const [k, v] = p.split('=');
+    if (k && v) parts[k.trim()] = v.trim();
+  });
+  if (!parts.ts || !parts.v1) return false;
+  const dataId = String(
+    req.query['data.id'] || (req.body && req.body.data && req.body.data.id) || ''
+  ).toLowerCase();
+  const manifest = `id:${dataId};request-id:${reqId};ts:${parts.ts};`;
+  const hmac = crypto.createHmac('sha256', MP_WEBHOOK_SECRET).update(manifest).digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(parts.v1));
+  } catch {
+    return false;
+  }
+}
+
+// Extrai o tipo de notificação e o id do pagamento dos vários formatos do MP.
+function extractPaymentNotification(req) {
+  const q = req.query || {};
+  const b = req.body || {};
+  const type = b.type || q.type || q.topic || b.topic || '';
+  const id =
+    (b.data && b.data.id) ||
+    q['data.id'] ||
+    q.id ||
+    (b.resource && String(b.resource).split('/').pop()) ||
+    null;
+  return { type: String(type), id: id ? String(id) : null };
+}
+
+// Consulta os detalhes do pagamento na API do Mercado Pago.
+async function fetchMpPayment(paymentId) {
+  if (!MP_ACCESS_TOKEN) return null;
+  const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+    headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` }
+  });
+  if (!r.ok) {
+    console.error(`[MP] Falha ao consultar pagamento ${paymentId}: ${r.status} ${await r.text().catch(() => '')}`);
+    return null;
+  }
+  return r.json();
+}
+
+// Marca o pedido como pago a partir de um pagamento aprovado do MP.
+// Tenta casar com um pedido existente por external_reference (id) ou e-mail;
+// se não achar, cria um novo registro de pedido já "Pago".
+async function markOrderPaidFromMp(payment) {
+  const paymentId = String(payment.id);
+
+  // Idempotência: se esse pagamento já foi processado, não faz nada.
+  const dup = await pool.query('SELECT id FROM orders WHERE mp_payment_id = $1 LIMIT 1', [paymentId]);
+  if (dup.rows[0]) return { matched: dup.rows[0].id, already: true };
+
+  const email = String((payment.payer && payment.payer.email) || '').trim().toLowerCase();
+  const amount = Number(payment.transaction_amount) || 0;
+  const extRef = payment.external_reference;
+  const now = new Date().toISOString();
+
+  let order = null;
+  // 1) Casa pelo external_reference (id do pedido), se o checkout enviou um.
+  if (extRef && /^\d+$/.test(String(extRef))) {
+    const r = await pool.query('SELECT * FROM orders WHERE id = $1', [Number(extRef)]);
+    order = r.rows[0] || null;
+  }
+  // 2) Casa pelo e-mail do comprador (prioriza pedidos ainda não pagos).
+  if (!order && email) {
+    const r = await pool.query(
+      `SELECT * FROM orders WHERE lower(email) = $1
+       ORDER BY (status <> 'Pago') DESC, received_at DESC LIMIT 1`,
+      [email]
+    );
+    order = r.rows[0] || null;
+  }
+
+  if (order) {
+    await pool.query(
+      `UPDATE orders SET status = 'Pago', paid_at = $1, mp_payment_id = $2, acknowledged = FALSE
+       WHERE id = $3`,
+      [now, paymentId, order.id]
+    );
+    return { matched: order.id, created: false };
+  }
+
+  // 3) Sem pedido correspondente: cria um registro novo já pago, para o admin ver.
+  const id = Date.now();
+  const name =
+    (payment.payer && (payment.payer.first_name || payment.payer.name)) ||
+    'Cliente Mercado Pago';
+  await pool.query(
+    `INSERT INTO orders (id, received_at, date, name, email, phone, products, total, status, payment_method, ip, paid_at, mp_payment_id, acknowledged)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Pago', $9, $10, $11, $12, FALSE)`,
+    [
+      id, now, now, name, email, '',
+      JSON.stringify(payment.description ? [payment.description] : []),
+      amount,
+      payment.payment_type_id || 'mercadopago',
+      '', now, paymentId
+    ]
+  );
+  return { matched: id, created: true };
+}
+
+// GET é usado pelo MP apenas para validar a URL.
+app.get('/api/mp/webhook', (req, res) => res.sendStatus(200));
+
+app.post('/api/mp/webhook', async (req, res) => {
+  // Responde 200 imediatamente para o MP não reenviar a notificação.
+  if (!verifyMpSignature(req)) {
+    console.warn('[MP WEBHOOK] assinatura inválida — ignorado');
+    return res.sendStatus(401);
+  }
+  res.sendStatus(200);
+
+  try {
+    const { type, id } = extractPaymentNotification(req);
+    if (!id) return;
+    // Só nos interessam notificações de pagamento.
+    if (type && !/payment/i.test(type)) return;
+
+    if (!MP_ACCESS_TOKEN) {
+      console.warn(`[MP WEBHOOK] pagamento ${id} recebido, mas MP_ACCESS_TOKEN não está configurado — não dá para confirmar.`);
+      return;
+    }
+
+    const payment = await fetchMpPayment(id);
+    if (!payment) return;
+    if (payment.status !== 'approved') {
+      console.log(`[MP WEBHOOK] pagamento ${id} status="${payment.status}" — ignorado (só notificamos aprovados).`);
+      return;
+    }
+
+    const result = await markOrderPaidFromMp(payment);
+    if (result.already) {
+      console.log(`[MP WEBHOOK] pagamento ${id} já havia sido processado (pedido #${result.matched}).`);
+    } else {
+      console.log(`💰 [PAGAMENTO APROVADO] MP ${id} → pedido #${result.matched} ${result.created ? '(novo registro)' : '(atualizado para Pago)'}`);
+    }
+  } catch (err) {
+    console.error('[MP WEBHOOK] erro ao processar:', err);
   }
 });
 
@@ -369,6 +552,37 @@ app.post('/admin/api/orders/:id/key', adminAuth, async (req, res) => {
 });
 
 // =====================================================
+// Admin: notificações de pagamento (pedidos pagos via MP ainda não vistos)
+// =====================================================
+app.get('/admin/api/notifications', adminAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM orders WHERE status = 'Pago' AND acknowledged = FALSE
+       ORDER BY paid_at DESC NULLS LAST, received_at DESC`
+    );
+    res.json({ count: rows.length, orders: rows.map(rowToOrder) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao buscar notificações' });
+  }
+});
+
+// Marca notificações como vistas. Sem body: marca todas; com { id }: marca uma.
+app.post('/admin/api/notifications/ack', adminAuth, async (req, res) => {
+  try {
+    if (req.body && req.body.id) {
+      await pool.query('UPDATE orders SET acknowledged = TRUE WHERE id = $1', [Number(req.body.id)]);
+    } else {
+      await pool.query('UPDATE orders SET acknowledged = TRUE WHERE acknowledged = FALSE');
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao marcar notificações' });
+  }
+});
+
+// =====================================================
 // Admin: reuniões (serviços)
 // =====================================================
 app.get('/admin/api/meetings', adminAuth, async (req, res) => {
@@ -528,7 +742,14 @@ initDb()
     app.listen(PORT, () => {
       console.log(`\n✅ InviseStore backend rodando em http://localhost:${PORT}`);
       console.log(`   Painel:  http://localhost:${PORT}/admin`);
-      console.log(`   Login:   ${ADMIN_USER} / ${ADMIN_PASS}\n`);
+      console.log(`   Login:   ${ADMIN_USER} / ${ADMIN_PASS}`);
+      console.log(`   Webhook MP: POST /api/mp/webhook`);
+      if (!MP_ACCESS_TOKEN) {
+        console.warn('   ⚠️  MP_ACCESS_TOKEN não configurado — os pagamentos do Mercado Pago NÃO serão confirmados automaticamente.');
+      } else {
+        console.log('   ✅ MP_ACCESS_TOKEN configurado — confirmação automática de pagamentos ativa.');
+      }
+      console.log('');
     });
   })
   .catch(err => {
