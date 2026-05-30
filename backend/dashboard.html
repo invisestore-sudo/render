@@ -47,17 +47,10 @@
 <body>
 <header>
   <h1>Invise<span>Store</span> — Painel</h1>
-  <div class="row" style="gap:10px;">
-    <button class="ghost small" id="bell" title="Compras aprovadas" style="position:relative; font-size:16px; line-height:1;">🔔<span id="bell-badge" class="hidden" style="position:absolute; top:-7px; right:-7px; background:var(--danger); color:#fff; border-radius:999px; font-size:10px; font-weight:700; padding:1px 5px; min-width:16px;">0</span></button>
-    <button class="ghost small" onclick="location.reload()">Atualizar</button>
-  </div>
+  <button class="ghost small" onclick="location.reload()">Atualizar</button>
 </header>
 
 <main>
-  <div id="notif-banner" class="hidden" style="background:rgba(67,233,123,.12); border:1px solid var(--ok); color:var(--ok); padding:12px 16px; border-radius:10px; margin-bottom:16px; display:flex; gap:12px; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-    <span id="notif-banner-text"></span>
-    <button class="small" id="notif-banner-btn">Ver pedidos</button>
-  </div>
   <div class="tabs">
     <button class="tab active" data-tab="orders">Pedidos</button>
     <button class="tab" data-tab="meetings">Reuniões</button>
@@ -243,9 +236,7 @@ async function loadOrders() {
         '<td>' + escapeHtml(o.email) + '</td>' +
         '<td>' + escapeHtml((o.products||[]).join(', ')) + '</td>' +
         '<td>R$ ' + Number(o.total).toFixed(2) + '</td>' +
-        '<td><span class="badge ' + (o.status === 'Pago' ? 'active' : '') + '">' + escapeHtml(o.status) + '</span>' +
-          (o.status === 'Pago' && o.acknowledged === false ? ' <span class="badge active" style="background:rgba(67,233,123,.3)">NOVO</span>' : '') +
-        '</td>' +
+        '<td><span class="badge ' + (o.status === 'Pago' ? 'active' : '') + '">' + escapeHtml(o.status) + '</span></td>' +
         '<td class="actions">' +
           '<button class="small" onclick="genKeyFor(' + o.id + ')">+ Chave</button>' +
           (o.status !== 'Pago' ? '<button class="small ghost" onclick="markPaid(' + o.id + ')">Marcar pago</button>' : '') +
@@ -399,89 +390,16 @@ async function delMeeting(id) {
   catch (e) { toast('Erro: ' + e.message); }
 }
 
-// =====================================================
-// Notificações de compras aprovadas no Mercado Pago
-// Faz polling em /admin/api/notifications e avisa o admin
-// (badge no sino + banner + som + notificação do navegador).
-// =====================================================
-let lastNotifIds = new Set();
-let notifInitialized = false;
-
-function beep() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.type = 'sine';
-    o.frequency.setValueAtTime(880, ctx.currentTime);
-    o.frequency.setValueAtTime(1320, ctx.currentTime + 0.15);
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
-    o.start(); o.stop(ctx.currentTime + 0.6);
-  } catch (e) {}
-}
-
-function setBell(count) {
-  const badge = $('#bell-badge');
-  if (count > 0) { badge.textContent = count; badge.classList.remove('hidden'); }
-  else badge.classList.add('hidden');
-}
-
-function showNotifBanner(orders) {
-  if (!orders.length) { $('#notif-banner').classList.add('hidden'); return; }
-  const names = orders.slice(0, 3).map(o => escapeHtml(o.name)).join(', ');
-  $('#notif-banner-text').innerHTML =
-    '🎉 <strong>' + orders.length + '</strong> compra(s) aprovada(s) no Mercado Pago: ' +
-    names + (orders.length > 3 ? '…' : '');
-  $('#notif-banner').classList.remove('hidden');
-}
-
-async function ackAndOpenOrders() {
-  document.querySelector('.tab[data-tab="orders"]').click();
-  try { await api('POST', '/admin/api/notifications/ack'); } catch (e) {}
-  setBell(0);
-  $('#notif-banner').classList.add('hidden');
-  lastNotifIds = new Set();
-  loadOrders();
-}
-
-$('#bell').onclick = ackAndOpenOrders;
-$('#notif-banner-btn').onclick = ackAndOpenOrders;
-
-async function pollNotifications() {
-  try {
-    const data = await api('GET', '/admin/api/notifications');
-    setBell(data.count);
-    showNotifBanner(data.orders);
-    const ids = data.orders.map(o => o.id);
-    const newOnes = data.orders.filter(o => !lastNotifIds.has(o.id));
-    if (notifInitialized && newOnes.length) {
-      beep();
-      toast('💰 Nova compra aprovada: ' + newOnes[0].name);
-      if (window.Notification && Notification.permission === 'granted') {
-        newOnes.forEach(o => new Notification('💰 Compra aprovada — InviseStore', {
-          body: o.name + ' • R$ ' + Number(o.total).toFixed(2) + ' • ' + (o.products || []).join(', ')
-        }));
-      }
-      // Atualiza a lista de pedidos se ela estiver visível.
-      if (!$('#tab-orders').classList.contains('hidden')) loadOrders();
-    }
-    lastNotifIds = new Set(ids);
-    notifInitialized = true;
-  } catch (e) { /* silencioso: cold start / offline */ }
-}
-
-if (window.Notification && Notification.permission === 'default') {
-  Notification.requestPermission().catch(() => {});
-}
-
 loadOrders();
 loadKeys();
 loadMeetings();
-pollNotifications();
-setInterval(pollNotifications, 15000);
+
+// Atualiza a lista de pedidos automaticamente (sem recarregar a página),
+// para que o status mude de "Pendente" para "Pago" sozinho quando o
+// pagamento for confirmado pelo Mercado Pago.
+setInterval(() => {
+  if (!$('#tab-orders').classList.contains('hidden')) loadOrders();
+}, 20000);
 </script>
 </body>
 </html>
