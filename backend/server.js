@@ -302,12 +302,27 @@ async function markOrderPaidFromMp(payment) {
     const r = await pool.query('SELECT * FROM orders WHERE id = $1', [Number(extRef)]);
     order = r.rows[0] || null;
   }
-  // 2) Casa pelo e-mail do comprador (prioriza pedidos ainda não pagos).
+  // 2) Casa pelo e-mail do comprador (pedido ainda sem pagamento; prioriza
+  //    o de mesmo valor).
   if (!order && email) {
     const r = await pool.query(
-      `SELECT * FROM orders WHERE lower(email) = $1
-       ORDER BY (status <> 'Pago') DESC, received_at DESC LIMIT 1`,
-      [email]
+      `SELECT * FROM orders WHERE lower(email) = $1 AND mp_payment_id IS NULL
+       ORDER BY (ABS(total - $2) < 0.01) DESC, received_at DESC LIMIT 1`,
+      [email, amount]
+    );
+    order = r.rows[0] || null;
+  }
+  // 2b) Sem e-mail batendo: casa por valor + recencia (pedido pendente recente,
+  //     mesmo valor, ainda sem pagamento). Cobre o caso de o cliente usar um
+  //     e-mail diferente no Mercado Pago.
+  if (!order && amount > 0) {
+    const r = await pool.query(
+      `SELECT * FROM orders
+       WHERE mp_payment_id IS NULL AND status <> 'Pago'
+         AND ABS(total - $1) < 0.01
+         AND received_at > now() - interval '3 days'
+       ORDER BY received_at DESC LIMIT 1`,
+      [amount]
     );
     order = r.rows[0] || null;
   }
@@ -338,6 +353,46 @@ async function markOrderPaidFromMp(payment) {
     ]
   );
   return { matched: id, created: true };
+}
+
+// =====================================================
+// Reconciliacao automatica com a API do Mercado Pago
+//
+// Como os links de pagamento sao fixos, o MP nao dispara o webhook para eles.
+// Entao, periodicamente (e quando o painel e aberto), consultamos os pagamentos
+// aprovados da conta e marcamos os pedidos correspondentes como "Pago".
+// =====================================================
+let _reconcileRunning = false;
+let _lastReconcile = 0;
+
+async function reconcilePayments() {
+  if (!MP_ACCESS_TOKEN || _reconcileRunning) return;
+  _reconcileRunning = true;
+  try {
+    const url = 'https://api.mercadopago.com/v1/payments/search'
+      + '?sort=date_created&criteria=desc'
+      + '&range=date_created&begin_date=NOW-30DAYS&end_date=NOW'
+      + '&status=approved&limit=50';
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` } });
+    if (!r.ok) {
+      console.error(`[RECONCILE] busca de pagamentos falhou: ${r.status} ${await r.text().catch(() => '')}`);
+      return;
+    }
+    const data = await r.json();
+    const results = Array.isArray(data.results) ? data.results : [];
+    let novos = 0;
+    for (const p of results) {
+      if (p.status !== 'approved') continue;
+      const res = await markOrderPaidFromMp(p);
+      if (res && !res.already) novos++;
+    }
+    if (novos > 0) console.log(`💰 [RECONCILE] ${novos} pagamento(s) aprovado(s) vinculado(s) a pedidos.`);
+  } catch (err) {
+    console.error('[RECONCILE] erro:', err);
+  } finally {
+    _reconcileRunning = false;
+    _lastReconcile = Date.now();
+  }
 }
 
 // GET é usado pelo MP apenas para validar a URL.
@@ -468,6 +523,9 @@ function adminAuth(req, res, next) {
 // =====================================================
 app.get('/admin/api/orders', adminAuth, async (req, res) => {
   try {
+    // Antes de listar, reconcilia com o Mercado Pago (no maximo 1x a cada 15s)
+    // para que pedidos pagos virem "Pago" automaticamente ao abrir/atualizar.
+    if (Date.now() - _lastReconcile > 15000) await reconcilePayments();
     const { rows } = await pool.query('SELECT * FROM orders ORDER BY received_at DESC');
     res.json(rows.map(rowToOrder));
   } catch (err) {
@@ -751,6 +809,11 @@ initDb()
       }
       console.log('');
     });
+    if (MP_ACCESS_TOKEN) {
+      reconcilePayments();
+      setInterval(reconcilePayments, 60000);
+      console.log('🔄 Reconciliação automática de pagamentos ativa (a cada 60s).');
+    }
   })
   .catch(err => {
     console.error('ERRO ao inicializar banco:', err);
