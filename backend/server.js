@@ -30,6 +30,10 @@ const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || '';
 // Segredo opcional para validar a assinatura dos webhooks do Mercado Pago.
 // Se não configurado, a validação de assinatura fica desativada.
 const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || '';
+// URL publica deste backend (usada nas telas de retorno do checkout).
+const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://invisestore-backend.onrender.com').replace(/\/$/, '');
+// URL da loja (opcional) para o botao "Voltar a loja" nas telas de retorno.
+const STORE_URL = process.env.STORE_URL || '';
 
 if (!process.env.DATABASE_URL) {
   console.error('ERRO: variável DATABASE_URL não definida.');
@@ -213,6 +217,84 @@ app.post('/api/orders', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao salvar pedido' });
+  }
+});
+
+// =====================================================
+// Checkout: cria o pedido (Pendente) e gera a preferencia do Mercado Pago
+// JA AMARRADA a este pedido (external_reference). Assim o pagamento conecta
+// sozinho ao pedido certo, mantendo os dados do cliente, e o cliente volta
+// para as telas de retorno (/compra/sucesso, /compra/falha).
+// =====================================================
+app.post('/api/checkout', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.name || !b.email) {
+      return res.status(400).json({ error: 'name e email são obrigatórios' });
+    }
+    const items = (Array.isArray(b.items) ? b.items : [])
+      .map(it => ({
+        title: String(it.title || 'Produto').slice(0, 250),
+        quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
+        currency_id: 'BRL',
+        unit_price: Math.round((Number(it.price) || 0) * 100) / 100
+      }))
+      .filter(it => it.unit_price > 0);
+    if (items.length === 0) {
+      return res.status(400).json({ error: 'nenhum item com preço válido' });
+    }
+
+    const id = b.id || Date.now();
+    const now = new Date().toISOString();
+    const products = items.map(it => it.title);
+    const total = items.reduce((s, it) => s + it.unit_price * it.quantity, 0);
+
+    await pool.query(
+      `INSERT INTO orders (id, received_at, date, name, email, phone, products, total, status, payment_method, ip)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Pendente', $9, $10)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        id, now, now,
+        String(b.name).trim(), String(b.email).trim(), String(b.phone || '').trim(),
+        JSON.stringify(products), total,
+        b.paymentMethod || 'Mercado Pago',
+        req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''
+      ]
+    );
+    console.log(`[NOVO PEDIDO] #${id} - ${b.name} (${b.email}) - R$ ${total}`);
+
+    if (!MP_ACCESS_TOKEN) {
+      return res.status(503).json({ error: 'MP_ACCESS_TOKEN não configurado', id });
+    }
+
+    const prefBody = {
+      items,
+      payer: { name: String(b.name).trim(), email: String(b.email).trim() },
+      external_reference: String(id),
+      notification_url: `${PUBLIC_URL}/api/mp/webhook`,
+      back_urls: {
+        success: `${PUBLIC_URL}/compra/sucesso`,
+        pending: `${PUBLIC_URL}/compra/pendente`,
+        failure: `${PUBLIC_URL}/compra/falha`
+      },
+      auto_return: 'approved',
+      metadata: { order_id: id }
+    };
+    const r = await fetch('https://api.mercadopago.com/checkout/preferences', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(prefBody)
+    });
+    if (!r.ok) {
+      console.error(`[CHECKOUT] falha ao criar preferência: ${r.status} ${await r.text().catch(() => '')}`);
+      return res.status(502).json({ error: 'falha ao criar checkout', id });
+    }
+    const pref = await r.json();
+    console.log(`[CHECKOUT] pedido #${id} → preferência ${pref.id}`);
+    res.json({ ok: true, id, init_point: pref.init_point, sandbox_init_point: pref.sandbox_init_point });
+  } catch (err) {
+    console.error('[CHECKOUT] erro:', err);
+    res.status(500).json({ error: 'erro ao criar checkout' });
   }
 });
 
@@ -809,6 +891,38 @@ app.get('/admin/api/keys/export.csv', adminAuth, async (req, res) => {
 app.get('/admin', adminAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
+
+// =====================================================
+// Telas de retorno do checkout (back_urls do Mercado Pago)
+// =====================================================
+function compraPage({ titulo, emoji, cor, msg }) {
+  const voltar = STORE_URL
+    ? `<a href="${STORE_URL}" style="display:inline-block;margin-top:24px;background:#6c63ff;color:#fff;text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600;">Voltar à loja</a>`
+    : '';
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">`
+    + `<meta name="viewport" content="width=device-width,initial-scale=1">`
+    + `<title>${titulo} — InviseStore</title><style>`
+    + `body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;`
+    + `background:#0a0a0f;color:#f0f0f5;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px;}`
+    + `.box{max-width:440px;text-align:center;background:#13131e;border:1px solid rgba(255,255,255,.08);`
+    + `border-radius:16px;padding:40px 28px;}.emoji{font-size:54px;line-height:1;}`
+    + `h1{font-size:22px;margin:18px 0 10px;color:${cor};}p{color:#b8b8c8;font-size:15px;line-height:1.6;margin:0;}`
+    + `</style></head><body><div class="box"><div class="emoji">${emoji}</div>`
+    + `<h1>${titulo}</h1><p>${msg}</p>${voltar}</div></body></html>`;
+}
+
+app.get('/compra/sucesso', (req, res) => res.send(compraPage({
+  titulo: 'Pagamento aprovado!', emoji: '✅', cor: '#43e97b',
+  msg: 'Recebemos a confirmação do seu pagamento. O seu produto será enviado para o seu e-mail em instantes — verifique também a caixa de spam. Obrigado pela compra! 🎉'
+})));
+app.get('/compra/pendente', (req, res) => res.send(compraPage({
+  titulo: 'Pagamento em processamento', emoji: '⏳', cor: '#f59e0b',
+  msg: 'Seu pagamento está sendo processado. Assim que for confirmado, enviaremos o produto para o seu e-mail.'
+})));
+app.get('/compra/falha', (req, res) => res.send(compraPage({
+  titulo: 'Compra não concluída', emoji: '❌', cor: '#ef4444',
+  msg: 'O pagamento não foi concluído, então a sua compra não foi realizada. Você pode tentar novamente quando quiser.'
+})));
 
 app.get('/', (req, res) => {
   res.send('InviseStore backend ativo. Painel: <a href="/admin">/admin</a>');

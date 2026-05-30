@@ -66,7 +66,7 @@
     </div>
     <div class="card" style="padding:0; overflow:auto;">
       <table id="orders-table">
-        <thead><tr><th>ID</th><th>Data</th><th>Cliente</th><th>Email</th><th>Produtos</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead>
+        <thead><tr><th>ID</th><th>Data</th><th>Cliente</th><th>Email</th><th>WhatsApp</th><th>Produtos</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead>
         <tbody></tbody>
       </table>
       <div class="empty" id="orders-empty">Carregando pedidos…</div>
@@ -216,6 +216,7 @@ async function loadOrders() {
         '<td>' + fmtDate(o.date) + '</td>' +
         '<td>' + escapeHtml(o.name) + '</td>' +
         '<td>' + escapeHtml(o.email) + '</td>' +
+        '<td>' + escapeHtml(o.phone || '—') + '</td>' +
         '<td>' + escapeHtml((o.products||[]).join(', ')) + '</td>' +
         '<td>R$ ' + Number(o.total).toFixed(2) + '</td>' +
         '<td><span class="badge ' + (o.status === 'Pago' ? 'active' : '') + '">' + escapeHtml(o.status) + '</span></td>' +
