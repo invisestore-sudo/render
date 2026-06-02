@@ -96,6 +96,19 @@ async function initDb() {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS mp_payment_id TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT TRUE;
   `);
+  // Sincronização na nuvem dos apps (FinApp, HabitPlan, ...).
+  // Cada conta (chave INVS-...) tem um registro por app. last-write-wins por updated_at
+  // (epoch em milissegundos, vindo do Date.now() do cliente).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_data (
+      key TEXT NOT NULL,
+      app TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}',
+      updated_at BIGINT NOT NULL DEFAULT 0,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (key, app)
+    );
+  `);
   console.log('✅ Tabelas verificadas/criadas.');
 }
 
@@ -597,6 +610,75 @@ app.post('/api/validate-key', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao validar chave' });
+  }
+});
+
+// =====================================================
+// Cloud sync dos apps — armazenamento por (key, app)
+// GET  /api/data?key=INVS-XXXX&app=finapp  → { data, updatedAt }
+// POST /api/data { key, app, data, updatedAt }  → upsert last-write-wins
+// =====================================================
+app.get('/api/data', async (req, res) => {
+  try {
+    const key = String(req.query.key || '').trim().toUpperCase();
+    const appName = String(req.query.app || '').trim();
+    if (!key || !appName) return res.status(400).json({ error: 'key e app são obrigatórios' });
+
+    const { rows } = await pool.query(
+      'SELECT data, updated_at FROM app_data WHERE key = $1 AND app = $2',
+      [key, appName]
+    );
+    if (!rows[0]) return res.json({ data: null, updatedAt: 0 });
+    res.json({ data: rows[0].data, updatedAt: Number(rows[0].updated_at) || 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao buscar dados' });
+  }
+});
+
+app.post('/api/data', async (req, res) => {
+  try {
+    const { key: rawKey, app: appName, data, updatedAt } = req.body || {};
+    const key = String(rawKey || '').trim().toUpperCase();
+    const app = String(appName || '').trim();
+    if (!key || !app) return res.status(400).json({ error: 'key e app são obrigatórios' });
+    if (data === undefined || data === null || typeof data !== 'object') {
+      return res.status(400).json({ error: 'data inválido' });
+    }
+    const ts = Number(updatedAt) || 0;
+
+    // Upsert por (key, app) com last-write-wins: só sobrescreve se o updatedAt
+    // recebido for maior ou igual ao que já está salvo. Caso contrário, mantém
+    // o registro atual (outra aba/dispositivo gravou algo mais recente).
+    const { rows } = await pool.query(
+      `INSERT INTO app_data (key, app, data, updated_at, synced_at)
+       VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (key, app) DO UPDATE
+         SET data = EXCLUDED.data,
+             updated_at = EXCLUDED.updated_at,
+             synced_at = now()
+         WHERE EXCLUDED.updated_at >= app_data.updated_at
+       RETURNING data, updated_at`,
+      [key, app, JSON.stringify(data), ts]
+    );
+
+    if (rows[0]) {
+      return res.json({ ok: true, applied: true, updatedAt: Number(rows[0].updated_at) || 0 });
+    }
+    // Conflito: o registro existente é mais recente. Devolve o que está salvo.
+    const cur = await pool.query(
+      'SELECT data, updated_at FROM app_data WHERE key = $1 AND app = $2',
+      [key, app]
+    );
+    res.json({
+      ok: true,
+      applied: false,
+      data: cur.rows[0] ? cur.rows[0].data : null,
+      updatedAt: cur.rows[0] ? Number(cur.rows[0].updated_at) || 0 : 0,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao salvar dados' });
   }
 });
 
